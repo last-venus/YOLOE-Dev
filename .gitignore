@@ -1,0 +1,54 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Logs and temp
+*.log
+*.tmp
+*.swp
+
+# Images
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.webp
+*.tif
+*.tiff
+*.gif
+
+# Videos
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.flv
+*.webm
+*.m4v
+
+# Model weights and other large artifacts
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.bin
+*.safetensors
+
+# Dataset/archive files that are often large
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar

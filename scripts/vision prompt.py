@@ -6,38 +6,68 @@ from ultralytics import YOLOE
 from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
 
 # 直接填写示例图片路径
-IMAGE = "/home/jingxiuya/YOLOE/scripts/images/20260306/data/0000.jpg"  # 替换为你的输入图像路径
+IMAGE = "/home/jingxiuya/YOLOE/scripts/images/20250310/data/image_grid.jpg"  # 替换为你的输入图像路径
 
 # 待推理图片所在文件夹
 INFER_DIR = "/home/jingxiuya/YOLOE/scripts/images/20260306/data"
 
 # 推理结果保存文件夹
-OUTPUT_DIR = "/home/jingxiuya/YOLOE/scripts/runs/vision_batch"
+OUTPUT_DIR = "/home/jingxiuya/YOLOE/scripts/runs/260310/0000_26m_paper_and_red_cups"
 
 # 模型权重路径
-MODEL_PATH = "/home/jingxiuya/YOLOE/pt/yoloe-26n-seg.pt"
+MODEL_PATH = "/home/jingxiuya/YOLOE/pt/yoloe-26m-seg.pt"
 
 # 推理设备: 有 GPU 可填 0, 无 GPU 可改成 "cpu"
 DEVICE = 0
 
 # 视觉提示推理通常需要较低阈值, 否则容易直接被过滤掉
-CONF = 0.001
+CONF = 0.1
 
 # 支持的图片格式
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 # 定义视觉提示框, 坐标基于示例图片 IMAGE
+# visual_prompts = dict(
+#     bboxes=np.array(
+#         [
+#             [529.5, 337.6, 657.5, 505.6],  # paper cup
+#             [299.1, 318.3, 490.6, 525.9],  # red cup
+#             # [728.9, 129.3, 862.3, 507.2], # black cup
+#             # [1279.0, 891.4, 2664.6, 2255.3],  # red cup only
+#             # [1878.9, 1105.8, 2775.6, 2229.9],  # paper cup only
+#         ]
+#     ),
+#     cls=np.array([0, 1]),
+# )
 visual_prompts = dict(
     bboxes=np.array(
         [
-            [529.5, 337.6, 657.5, 505.6],
-            [299.1, 318.3, 490.6, 525.9],
-            [728.9, 129.3, 862.3, 507.2],
+            [594.3, 286.5, 827.7, 576.0],     # Box 18, class 0
+            [1903.9, 222.3, 2211.1, 604.5],   # Box 7, class 0
+            [3158.1, 74.8, 3407.2, 392.1],    # Box 10, class 0
+            [594.6, 970.4, 844.6, 1293.8],    # Box 3, class 0
+            [1823.3, 953.7, 2092.9, 1305.4],  # Box 5, class 0
+            [2908.6, 1028.2, 3135.9, 1316.5], # Box 16, class 0
+            [530.2, 1721.4, 822.8, 2077.2],   # Box 4, class 0
+            [1969.3, 1639.5, 2265.7, 2003.1], # Box 2, class 0
+            [3310.8, 1552.5, 3597.2, 1908.6], # Box 12, class 0
+
+            [107.9, 1630.0, 468.0, 2045.8],   # Box 1, class 1
+            [1488.4, 1619.3, 1946.6, 2091.4], # Box 6, class 1
+            [283.7, 863.5, 544.9, 1215.4],    # Box 8, class 1
+            [2851.3, 1527.9, 3344.5, 2020.3], # Box 9, class 1
+            [1459.8, 145.0, 1816.1, 580.9],   # Box 11, class 1
+            [2831.2, 0.8, 3099.4, 346.9],     # Box 13, class 1
+            [239.5, 250.5, 544.1, 596.5],     # Box 14, class 1
+            [1526.9, 816.3, 1796.9, 1184.5],  # Box 15, class 1
+            [2682.8, 909.8, 2933.6, 1223.4],  # Box 17, class 1
         ]
     ),
-    cls=np.array([0,1,2]),
+    cls=np.array([
+        0, 0, 0, 0, 0, 0, 0, 0, 0,
+        1, 1, 1, 1, 1, 1, 1, 1, 1
+    ]),
 )
-
 
 def collect_images(image_dir: Path) -> list[Path]:
     return sorted(
@@ -53,7 +83,7 @@ def draw_prompt_boxes(image_path: Path, output_path: Path, prompts: dict) -> Non
         print(f"Failed to load prompt image: {image_path}")
         return
 
-    for i, box in enumerate(prompts["bboxes"], start=1):
+    for box, cls_id in zip(prompts["bboxes"], prompts["cls"]):
         x1, y1, x2, y2 = map(int, box.tolist())
         cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 5)
 
@@ -68,7 +98,7 @@ def draw_prompt_boxes(image_path: Path, output_path: Path, prompts: dict) -> Non
         cv2.line(img, (x2, y2), (x2, y2 - corner_len), (0, 255, 255), 4)
         cv2.putText(
             img,
-            f"VISUAL PROMPT {i}",
+            f"CLS {int(cls_id)}",
             (x1, max(40, y1 - 10)),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.0,
@@ -118,7 +148,6 @@ def main() -> None:
     draw_prompt_boxes(image_path, prompt_save_path, visual_prompts)
 
     print(f"Finished. All result images are saved in: {output_dir}")
-
 
 if __name__ == "__main__":
     main()

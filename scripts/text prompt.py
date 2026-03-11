@@ -13,7 +13,7 @@ model = YOLOE("/home/jingxiuya/YOLOE/pt/yoloe-26l-seg.pt")
 # get_text_pe(names) 会根据类别名称生成文本嵌入（text prompt embeddings）
 model.set_classes(names, model.get_text_pe(names))
 
-IMAGE = "/home/jingxiuya/YOLOE/scripts/images/20250310/data/image_grid.jpg"  # 替换为你的输入图像路径
+IMAGE = "/home/jingxiuya/YOLOE/scripts/images/20250310/data/0008.jpg"  # 替换为你的输入图像路径
 
 # 进行预测，并保存结果
 results = model.predict(

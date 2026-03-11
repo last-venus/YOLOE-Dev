@@ -2,10 +2,10 @@
 from pathlib import Path
 
 # 直接在这里填写需要处理的 mp4 文件路径
-MP4_FILE_PATH = Path("/home/jingxiuya/YOLOE/scripts/images/20250310/0000.mp4")
+MP4_FILE_PATH = Path("/home/jingxiuya/YOLOE/scripts/images/20260311/0000.mp4")
 
 # 每隔 30 帧保存一张图片
-FRAME_INTERVAL = 30
+FRAME_INTERVAL = 45
 
 
 def get_next_image_index(output_dir: Path) -> int:

@@ -53,3 +53,7 @@ env/
 *.tgz
 *.7z
 *.rar
+
+
+*.txt
+*.yaml

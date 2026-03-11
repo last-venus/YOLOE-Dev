@@ -110,9 +110,9 @@ class ImageGridMaker:
 if __name__ == "__main__":
     # 直接运行本文件时，会使用下面的示例参数生成一张拼图总览。
     maker = ImageGridMaker(
-        image_dir="/home/jingxiuya/YOLOE/scripts/runs/260310/0000_26s_paper_and_red_cups",
-        rows=5,
-        cols=5,
+        image_dir="/home/jingxiuya/YOLOE/scripts/images/20260312/prompt",
+        rows=3,
+        cols=3,
         output_name="image_grid.jpg",
     )
     maker.make_grid()

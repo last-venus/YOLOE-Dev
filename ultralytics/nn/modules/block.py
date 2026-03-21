@@ -1924,6 +1924,9 @@ class SAVPE(nn.Module):
             embed (int): Embedding dimension.
         """
         super().__init__()
+        # cv1分支: 对P3/P4/P5分别做两层3x3卷积，统一到c3通道。
+        # 其中P4、P5再上采样到P3分辨率，最终三层都变成 [B, c3, H, W]，
+        # 供后续拼接后生成内容特征图 x 使用。
         self.cv1 = nn.ModuleList(
             nn.Sequential(
                 Conv(x, c3, 3), Conv(c3, c3, 3), nn.Upsample(scale_factor=i * 2) if i in {1, 2} else nn.Identity()
@@ -1931,22 +1934,35 @@ class SAVPE(nn.Module):
             for i, x in enumerate(ch)
         )
 
+        # cv2分支: 用更轻的1x1卷积统一通道，同样把P4/P5对齐到P3分辨率，
+        # 供后续拼接后生成空间权重底图 y 使用。
         self.cv2 = nn.ModuleList(
             nn.Sequential(Conv(x, c3, 1), nn.Upsample(scale_factor=i * 2) if i in {1, 2} else nn.Identity())
             for i, x in enumerate(ch)
         )
 
+        # 固定把embed维拆成16组做空间加权聚合，例如512 = 16 * 32。
         self.c = 16
+        # 3*c3 -> embed，输出内容特征图 x: [B, embed, H, W]。
         self.cv3 = nn.Conv2d(3 * c3, embed, 1)
+        # 3*c3 -> 16，输出空间权重底图 y: [B, 16, H, W]。
         self.cv4 = nn.Conv2d(3 * c3, self.c, 3, padding=1)
+        # 把visual prompt mask从1通道映射到16通道。
         self.cv5 = nn.Conv2d(1, self.c, 3, padding=1)
+        # 融合图像空间特征和prompt mask特征，得到每个prompt对应的空间权重特征。
         self.cv6 = nn.Sequential(Conv(2 * self.c, self.c, 3), nn.Conv2d(self.c, self.c, 3, padding=1))
 
     def forward(self, x: list[torch.Tensor], vp: torch.Tensor) -> torch.Tensor:
         """Process input features and visual prompts to generate enhanced embeddings."""
+        # 1) 走cv2分支:
+        # P3/P4/P5 -> 统一到 [B, c3, H, W]，拼接后压到16通道，
+        # 得到空间权重底图 y: [B, 16, H, W]。
         y = [self.cv2[i](xi) for i, xi in enumerate(x)]
         y = self.cv4(torch.cat(y, dim=1))
 
+        # 2) 走cv1分支:
+        # P3/P4/P5 -> 统一到 [B, c3, H, W]，拼接后投影到embed维，
+        # 得到内容特征图 x: [B, embed, H, W]。
         x = [self.cv1[i](xi) for i, xi in enumerate(x)]
         x = self.cv3(torch.cat(x, dim=1))
 
@@ -1954,20 +1970,37 @@ class SAVPE(nn.Module):
 
         Q = vp.shape[1]
 
+        # 拉平空间维，后续在 H*W 个位置上做加权聚合。
         x = x.view(B, C, -1)
 
+        # 把y扩展到每个prompt上:
+        # [B,16,H,W] -> [B,Q,16,H,W] -> [B*Q,16,H,W]
         y = y.reshape(B, 1, self.c, H, W).expand(-1, Q, -1, -1, -1).reshape(B * Q, self.c, H, W)
+        # vp: [B,Q,H,W] -> [B*Q,1,H,W]
         vp = vp.reshape(B, Q, 1, H, W).reshape(B * Q, 1, H, W)
 
+        # 3) 将图像空间特征与prompt mask特征融合，
+        # 得到每个prompt专属的空间权重特征。
         y = self.cv6(torch.cat((y, self.cv5(vp)), dim=1))
 
+        # [B*Q,16,H,W] -> [B,Q,16,H*W]
         y = y.reshape(B, Q, self.c, -1)
+        # [B*Q,1,H,W] -> [B,Q,1,H*W]
         vp = vp.reshape(B, Q, 1, -1)
 
+        # 4) 只在prompt区域内保留有效位置:
+        # vp=0的位置赋极小值，使softmax后这些位置权重近似为0。
         score = y * vp + torch.logical_not(vp) * torch.finfo(y.dtype).min
+        # 在空间维(H*W)上做softmax，得到每个prompt的空间注意力权重。
         score = F.softmax(score, dim=-1).to(y.dtype)
+
+        # 5) 将embed维按16组拆开，例如512 -> 16组 * 32维，
+        # 再用上面的空间权重对每组做加权求和，
+        # 得到每个prompt的聚合特征。
         aggregated = score.transpose(-2, -3) @ x.reshape(B, self.c, C // self.c, -1).transpose(-1, -2)
 
+        # 6) 把16组重新拼回embed维，并做L2归一化，
+        # 最终输出 [B, Q, embed]，即每个prompt一个视觉提示向量。
         return F.normalize(aggregated.transpose(-2, -3).reshape(B, Q, -1), dim=-1, p=2)
 
 

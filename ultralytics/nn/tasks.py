@@ -1212,15 +1212,16 @@ class YOLOEModel(DetectionModel):
             batch (dict): Batch to compute loss on.
             preds (torch.Tensor | list[torch.Tensor], optional): Predictions.
         """
-        if not hasattr(self, "criterion"):
-            from ultralytics.utils.loss import TVPDetectLoss
+        from ultralytics.utils.loss import TVPDetectLoss
 
-            visual_prompt = batch.get("visuals", None) is not None  # TODO
+        visual_prompt = batch.get("visuals", None) is not None  # TODO
+        if not hasattr(self, "criterion") or getattr(self, "_criterion_visual_prompt", None) != visual_prompt:
             self.criterion = (
                 (E2ELoss(self, TVPDetectLoss) if getattr(self, "end2end", False) else TVPDetectLoss(self))
                 if visual_prompt
                 else self.init_criterion()
             )
+            self._criterion_visual_prompt = visual_prompt
         if preds is None:
             preds = self.forward(
                 batch["img"],
@@ -1264,18 +1265,23 @@ class YOLOESegModel(YOLOEModel, SegmentationModel):
             batch (dict): Batch to compute loss on.
             preds (torch.Tensor | list[torch.Tensor], optional): Predictions.
         """
-        if not hasattr(self, "criterion"):
-            from ultralytics.utils.loss import TVPSegmentLoss
+        from ultralytics.utils.loss import TVPSegmentLoss
 
-            visual_prompt = batch.get("visuals", None) is not None  # TODO
+        visual_prompt = batch.get("visuals", None) is not None  # TODO
+        if not hasattr(self, "criterion") or getattr(self, "_criterion_visual_prompt", None) != visual_prompt:
             self.criterion = (
                 (E2ELoss(self, TVPSegmentLoss) if getattr(self, "end2end", False) else TVPSegmentLoss(self))
                 if visual_prompt
                 else self.init_criterion()
             )
+            self._criterion_visual_prompt = visual_prompt
 
         if preds is None:
-            preds = self.forward(batch["img"], tpe=batch.get("txt_feats", None), vpe=batch.get("visuals", None))
+            preds = self.forward(
+                batch["img"],
+                tpe=None if "visuals" in batch else batch.get("txt_feats", None),
+                vpe=batch.get("visuals", None),
+            )
         return self.criterion(preds, batch)
 
 

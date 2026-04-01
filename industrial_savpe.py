@@ -1,15 +1,22 @@
 import torch
 
-from ultralytics.data import YOLOConcatDataset
+from ultralytics.data import YOLOConcatDataset, build_yolo_dataset
 from ultralytics.data.augment import LoadVisualPrompt
+from ultralytics.utils.ops import xywh2xyxy
+from ultralytics.models.yolo.detect import DetectionTrainer
 from ultralytics.models.yolo.yoloe.train_seg import YOLOESegVPTrainer
 from ultralytics.nn.tasks import YOLOESegModel
 from ultralytics.utils import RANK
 from ultralytics.utils.loss import E2ELoss, TVPSegmentLoss
+from ultralytics.utils.torch_utils import unwrap_model
 
 
 class MaskAwareVisualPrompt(LoadVisualPrompt):
     """优先使用实例 mask 生成 visual prompt，只有拿不到 mask 时才退回 bbox。"""
+
+    def __init__(self, nc, scale_factor=1 / 8):
+        super().__init__(scale_factor=scale_factor)
+        self.nc = nc
 
     def __call__(self, labels):
         # 当前样本图像尺寸，格式为 (H, W)
@@ -21,10 +28,18 @@ class MaskAwareVisualPrompt(LoadVisualPrompt):
             masks = labels["masks"]
         elif "bboxes" in labels:
             bboxes = labels["bboxes"]
+            bboxes = xywh2xyxy(bboxes) * torch.tensor(imgsz)[[1, 0, 1, 0]]  # denormalize boxes
 
-        # YOLOE 的 visual prompt 仍然需要按类别组织。
+        # 训练和验证统一使用全局类语义：
+        # visuals 的通道号始终等于数据集全局类 id，visuals_cls 仅记录当前图里实际出现的类别。
         cls = labels["cls"].squeeze(-1).to(torch.int)
-        labels["visuals"] = self.get_visuals(cls, imgsz, bboxes=bboxes, masks=masks)
+        cls_global = torch.unique(cls, sorted=True)
+        labels["visuals_cls"] = cls_global.to(labels["cls"].dtype)
+        local_visuals = self.get_visuals(cls, imgsz, bboxes=bboxes, masks=masks)
+        visuals = local_visuals.new_zeros((self.nc, *local_visuals.shape[1:]))
+        if cls_global.numel():
+            visuals[cls_global] = local_visuals
+        labels["visuals"] = visuals
         return labels
 
 
@@ -61,7 +76,7 @@ class IndustrialYOLOESegModel(YOLOESegModel):
 
     # overfit12 场景下，先弱化 seg loss，通常更容易先把类别和定位学稳。
     # 顺序为：(box, seg, cls, dfl, sem)
-    industrial_loss_gains = (1.0, 0.0, 3.0, 1.0, 0.0)
+    industrial_loss_gains = (1.0, 1.0, 1.5, 1.0, 0.0)
 
     def loss(self, batch, preds=None):
         visual_prompt = batch.get("visuals", None) is not None
@@ -97,7 +112,7 @@ def replace_load_visual_prompt(dataset, prompt_cls=MaskAwareVisualPrompt):
 
     def _replace_prompt(ds):
         ds.transforms.transforms = [t for t in ds.transforms.transforms if not isinstance(t, LoadVisualPrompt)]
-        ds.transforms.append(prompt_cls())
+        ds.transforms.append(prompt_cls(ds.data["nc"]))
 
     if isinstance(dataset, YOLOConcatDataset):
         for ds in dataset.datasets:
@@ -128,8 +143,48 @@ class IndustrialSAVPETrainer(YOLOESegVPTrainer):
         return model
 
     def build_dataset(self, img_path, mode="train", batch=None):
-        dataset = super().build_dataset(img_path, mode, batch)
+        gs = max(int(unwrap_model(self.model).stride.max() if self.model else 0), 32)
+        if mode != "train":
+            dataset = build_yolo_dataset(self.args, img_path, batch, self.data, mode=mode, rect=False, stride=gs)
+        else:
+            img_paths = img_path if isinstance(img_path, list) else [img_path]
+            datasets = [
+                build_yolo_dataset(self.args, im_path, batch, self.training_data[im_path], mode=mode, stride=gs)
+                for im_path in img_paths
+            ]
+            dataset = YOLOConcatDataset(datasets) if len(datasets) > 1 else datasets[0]
         return replace_load_visual_prompt(dataset)
+
+    @staticmethod
+    def _share_batch_visuals(batch: dict[str, torch.Tensor]) -> None:
+        """Use prompts from other samples in the same batch as extra negative visual prompts.
+
+        单类图多图训练时，单张图通常只会激活一个 visual prompt 通道。
+        这里把同一 batch 里其他样本的 prompt 拷到对应全局类通道，形成一个小型 prompt bank，
+        让每张图都能同时看到真实的正类和负类 prompt，而不是只和全零通道对比。
+        """
+        visuals = batch.get("visuals", None)
+        if visuals is None or visuals.ndim != 4 or visuals.shape[0] < 2:
+            return
+
+        prompt_mask = visuals.flatten(2).abs().sum(-1) > 0  # (B, C)
+        available_classes = torch.where(prompt_mask.any(0))[0]
+        if not len(available_classes):
+            return
+
+        shared_visuals = visuals.clone()
+        for cls_idx in available_classes.tolist():
+            source_idx = torch.where(prompt_mask[:, cls_idx])[0][0]
+            missing = ~prompt_mask[:, cls_idx]
+            if missing.any():
+                shared_visuals[missing, cls_idx] = shared_visuals[source_idx, cls_idx]
+        batch["visuals"] = shared_visuals
+
+    def preprocess_batch(self, batch):
+        """工业 SAVPE 训练只使用视觉 prompt，不再依赖 text features。"""
+        batch = DetectionTrainer.preprocess_batch(self, batch)
+        self._share_batch_visuals(batch)
+        return batch
 
     def _close_dataloader_mosaic(self):
         super()._close_dataloader_mosaic()

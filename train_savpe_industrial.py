@@ -1,4 +1,7 @@
+import json
+import shutil
 import sys
+from pathlib import Path
 
 sys.path.insert(0, "/home/jingxiuya/YOLOE-Dev")
 
@@ -9,7 +12,7 @@ from ultralytics.utils.torch_utils import strip_optimizer, torch_distributed_zer
 from val_savpe_industrial import run_visual_val
 
 
-DATASET_YAML = "/home/jingxiuya/datasets/african-wildlife-seg-overfit12/african-wildlife-seg-overfit12.yaml"
+DATASET_YAML = "/home/jingxiuya/datasets/two_class_six_each_same_train_val/two_class_six_each_same_train_val.yaml"
 WEIGHTS = "/home/jingxiuya/datasets/pt/yoloe-26s-seg.pt"
 
 
@@ -29,10 +32,12 @@ class IndustrialVisualValTrainer(IndustrialSAVPETrainer):
     visual_val_refer_data = DATASET_YAML
     visual_val_refer_split = "train"
     visual_val_split = "val"
-    visual_val_batch = 4
-    visual_val_name = "african-wildlife-industrial-vp-overfit12-visual-val"
+    visual_val_batch = 6
+    visual_val_name = None
+    best_visual_val_name = "best_visual_val"
+    best_visual_epoch = None
 
-    def _build_visual_val_kwargs(self):
+    def _build_visual_val_kwargs(self, *, project=None, name=None, plots=None):
         eval_data = resolve_single_yolo_data(self.args.data, "val")
         refer_data = self.visual_val_refer_data or resolve_single_yolo_data(self.args.data, "train")
         return {
@@ -44,19 +49,45 @@ class IndustrialVisualValTrainer(IndustrialSAVPETrainer):
             "imgsz": self.args.imgsz,
             "device": self.args.device,
             "workers": self.args.workers,
-            "project": self.save_dir.parent,
-            "name": self.visual_val_name,
-            "plots": self.args.plots,
+            "project": project if project is not None else self.save_dir.parent,
+            "name": name if name is not None else (self.visual_val_name or f"{self.save_dir.name}-visual-val"),
+            "plots": self.args.plots if plots is None else plots,
             "base_overrides": self.args,
             "callbacks": self.callbacks,
         }
 
+    @staticmethod
+    def _serialize_stats(stats):
+        return {k: float(v) for k, v in stats.items()}
+
+    def _save_best_visual_val_snapshot(self, source_dir, stats, fitness):
+        """Persist the current best visual-val artifacts into the training run directory."""
+        if RANK not in {-1, 0}:
+            return
+
+        source_dir = Path(source_dir)
+        target_dir = self.save_dir / self.best_visual_val_name
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.copytree(source_dir, target_dir)
+
+        summary = {
+            "best_epoch": self.best_visual_epoch,
+            "fitness": None if fitness is None else float(fitness),
+            "stats": self._serialize_stats(stats),
+            "source_dir": str(source_dir),
+        }
+        (target_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        LOGGER.info(f"Saved best visual-val snapshot to {target_dir}")
+
     def validate(self):
         """训练中如果开启 val，则跑 visual-val。"""
-        stats, _ = run_visual_val(self.ema.ema, **self._build_visual_val_kwargs())
+        stats, validator = run_visual_val(self.ema.ema, **self._build_visual_val_kwargs())
         fitness = stats.pop("fitness", -self.loss.detach().cpu().numpy())
-        if not self.best_fitness or self.best_fitness < fitness:
+        if self.best_fitness is None or self.best_fitness < fitness:
             self.best_fitness = fitness
+            self.best_visual_epoch = self.epoch + 1
+            self._save_best_visual_val_snapshot(validator.save_dir, stats, fitness)
         return stats, fitness
 
     def final_eval(self):
@@ -70,7 +101,9 @@ class IndustrialVisualValTrainer(IndustrialSAVPETrainer):
 
         if model:
             LOGGER.info(f"\nVisual-validating {model}...")
-            stats, _ = run_visual_val(model, **self._build_visual_val_kwargs())
+            stats, validator = run_visual_val(model, **self._build_visual_val_kwargs())
+            fitness = stats.get("fitness", None)
+            self._save_best_visual_val_snapshot(validator.save_dir, stats, fitness)
             self.metrics = stats
             self.metrics.pop("fitness", None)
             self.run_callbacks("on_fit_epoch_end")
@@ -90,14 +123,15 @@ results = model.train(
     cls=1.0,  # 分类损失权重；如不训练分类可改为 0。
     data=DATA,  # world 风格数据配置，兼容 YOLOE 的 VP trainer。
     trainer=IndustrialVisualValTrainer,  # 用工业版 trainer，并把默认验证改成 visual-val。
-    batch=4,  # overfit12 时小 batch 往往更稳，也更省显存。
-    nbs=4,  # 名义 batch size 与真实 batch 对齐，避免默认梯度累积。
-    epochs=200,  # 过拟合测试时先给足 epoch，重点看能否真正记住样本。
-    patience=10,  # 不提前停止，方便直接看 overfit 能力。
+    batch=6,  # 与当前 six-image two-class overfit 数据集对齐。
+    nbs=6,  # 名义 batch size 与真实 batch 对齐，避免默认梯度累积。
+    epochs=200,  # 保留较长训练，由 best_visual_val 自动记录最佳 visual-val 结果。
+    patience=0,  # 不提前停止，方便直接看 overfit 能力。
     imgsz=640,  # 输入分辨率；通常和预训练模型保持一致。
     optimizer="AdamW",  # 如需试 SGD/Adam，可改这里。
-    lr0=3e-4,  # overfit12 时可适当调大，帮助更快贴合小样本。
-    lrf=1.0,  # 近似常数学习率，适合这种小规模 overfit 测试。
+    cos_lr=False,  # 恢复到旧实验的常数学习率风格，确保两类都能跨过收敛拐点。
+    lr0=3e-4,  # 旧实验能学会两类的关键学习率。
+    lrf=1.0,  # 与上面保持一致，避免在起量前把学习率提前收没。
     warmup_epochs=0.0,  # 关闭 warmup，让模型尽快进入有效优化。
     warmup_bias_lr=0.0,  # 与上面保持一致。
     weight_decay=0.0,  # 过拟合测试一般先关掉正则，便于观察模型上限。
@@ -121,6 +155,6 @@ results = model.train(
     hsv_s=0.0,  # 同上。
     hsv_v=0.0,  # 同上。
     erasing=0.0,  # 同上。
-    project="/home/jingxiuya/YOLOE-Dev/runs/savpe",  # 输出目录；重复实验时常改。
-    name="african-wildlife-industrial-vp-overfit12",  # 实验名；重复实验时常改。
+    project="/home/jingxiuya/YOLOE-Dev/runs/savpe1",  # 输出目录；重复实验时常改。
+    name="overfit-six-image-two-classes",  # six-image two-class overfit 基线。
 )

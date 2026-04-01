@@ -2205,11 +2205,15 @@ class LoadVisualPrompt:
         """
         imgsz = labels["img"].shape[1:]
         bboxes, masks = None, None
-        if "bboxes" in labels:
+        if "masks" in labels and labels["masks"] is not None and len(labels["masks"]):
+            masks = labels["masks"]
+        elif "bboxes" in labels:
             bboxes = labels["bboxes"]
             bboxes = xywh2xyxy(bboxes) * torch.tensor(imgsz)[[1, 0, 1, 0]]  # denormalize boxes
 
         cls = labels["cls"].squeeze(-1).to(torch.int)
+        cls_global = torch.unique(cls, sorted=True)
+        labels["visuals_cls"] = cls_global.to(labels["cls"].dtype)
         visuals = self.get_visuals(cls, imgsz, bboxes=bboxes, masks=masks)
         labels["visuals"] = visuals
         return labels

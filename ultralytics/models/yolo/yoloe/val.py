@@ -71,7 +71,7 @@ class YOLOEDetectValidator(DetectionValidator):
 
         # Count samples per class
         for batch in dataloader:
-            cls = batch["cls"].squeeze(-1).to(torch.int).unique()
+            cls = batch["visuals_cls"][batch["visuals_cls"] >= 0].to(torch.int)
             count = torch.bincount(cls, minlength=len(names))
             cls_visual_num += count
 
@@ -83,13 +83,17 @@ class YOLOEDetectValidator(DetectionValidator):
             batch = self.preprocess(batch)
             preds = model.get_visual_pe(batch["img"], visual=batch["visuals"])  # (B, max_n, embed_dim)
 
-            batch_idx = batch["batch_idx"]
             for i in range(preds.shape[0]):
-                cls = batch["cls"][batch_idx == i].squeeze(-1).to(torch.int).unique(sorted=True)
-                pad_cls = torch.ones(preds.shape[1], device=self.device) * -1
-                pad_cls[: cls.shape[0]] = cls
-                for c in cls:
-                    visual_pe[c] += preds[i][pad_cls == c].sum(0) / cls_visual_num[c]
+                cls = batch["visuals_cls"][i]
+                cls = cls[cls >= 0].to(torch.int)
+                if preds.shape[1] == len(names):
+                    for c in cls:
+                        visual_pe[c] += preds[i][c] / cls_visual_num[c]
+                else:
+                    pad_cls = torch.ones(preds.shape[1], device=self.device, dtype=torch.int) * -1
+                    pad_cls[: cls.shape[0]] = cls
+                    for c in cls:
+                        visual_pe[c] += preds[i][pad_cls == c].sum(0) / cls_visual_num[c]
 
         # Normalize embeddings for classes with samples, set others to zero
         visual_pe[cls_visual_num != 0] = F.normalize(visual_pe[cls_visual_num != 0], dim=-1, p=2)

@@ -319,6 +319,19 @@ class Annotator:
             box = box.tolist()
 
         multi_points = isinstance(box[0], list)  # multiple points with shape (n, 2)
+        if not multi_points:
+            x0, y0, x1, y1 = box[:4]
+            x0, x1 = sorted((float(x0), float(x1)))
+            y0, y1 = sorted((float(y0), float(y1)))
+            if self.pil:
+                max_w, max_h = self.im.size
+            else:
+                max_h, max_w = self.im.shape[:2]
+            x0 = min(max(x0, 0.0), max_w - 1)
+            y0 = min(max(y0, 0.0), max_h - 1)
+            x1 = min(max(x1, 0.0), max_w - 1)
+            y1 = min(max(y1, 0.0), max_h - 1)
+            box = [x0, y0, x1, y1]
         p1 = [int(b) for b in box[0]] if multi_points else (int(box[0]), int(box[1]))
         if self.pil:
             self.draw.polygon(
@@ -889,7 +902,8 @@ def plot_results(file: str = "path/to/results.csv", dir: str = "", on_plot: Call
                 columns = (
                     loss_keys[:loss_mid] + metric_keys[:metric_mid] + loss_keys[loss_mid:] + metric_keys[metric_mid:]
                 )
-                fig, ax = plt.subplots(2, len(columns) // 2, figsize=(len(columns) + 2, 6), tight_layout=True)
+                ncols = math.ceil(len(columns) / 2)
+                fig, ax = plt.subplots(2, ncols, figsize=(len(columns) + 2, 6), tight_layout=True)
                 ax = ax.ravel()
             x = data.select(data.columns[0]).to_numpy().flatten()
             for i, j in enumerate(columns):
@@ -899,6 +913,8 @@ def plot_results(file: str = "path/to/results.csv", dir: str = "", on_plot: Call
                 ax[i].set_title(j, fontsize=12)
         except Exception as e:
             LOGGER.error(f"Plotting error for {f}: {e}")
+    for k in range(len(columns), len(ax)):
+        ax[k].axis("off")
     ax[1].legend()
     fname = save_dir / "results.png"
     fig.savefig(fname, dpi=200)
